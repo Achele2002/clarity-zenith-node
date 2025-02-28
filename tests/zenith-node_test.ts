@@ -66,3 +66,27 @@ Clarinet.test({
     assertEquals(block.receipts[1].result, "(ok true)");
   },
 });
+
+Clarinet.test({
+  name: "Cannot update metrics with invalid uptime",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const wallet_1 = accounts.get("wallet_1")!;
+    
+    let block = chain.mineBlock([
+      Tx.contractCall(
+        "zenith-node",
+        "register-node",
+        [types.uint(10000)],
+        wallet_1.address
+      ),
+      Tx.contractCall(
+        "zenith-node",
+        "update-metrics",
+        [types.uint(101)],
+        wallet_1.address
+      )
+    ]);
+    
+    assertEquals(block.receipts[1].result, "(err u104)");
+  },
+});
