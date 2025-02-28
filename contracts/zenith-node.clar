@@ -6,6 +6,8 @@
 (define-constant err-not-registered (err u101))
 (define-constant err-already-registered (err u102))
 (define-constant err-insufficient-stake (err u103))
+(define-constant err-invalid-uptime (err u104))
+(define-constant err-transfer-failed (err u105))
 
 ;; Data vars
 (define-data-var min-stake-amount uint u10000)
@@ -28,16 +30,20 @@
     (asserts! (>= stake-amount (var-get min-stake-amount)) err-insufficient-stake)
     (asserts! (is-none node-data) err-already-registered)
     
-    (map-set nodes tx-sender {
-      status: "active",
-      stake: stake-amount,
-      rewards: u0,
-      uptime: u100,
-      last-active: block-height
-    })
-    
-    (var-set total-nodes (+ (var-get total-nodes) u1))
-    (ok true)
+    ;; Transfer stake to contract
+    (match (stx-transfer? stake-amount tx-sender (as-contract tx-sender))
+      success (begin
+        (map-set nodes tx-sender {
+          status: "active",
+          stake: stake-amount,
+          rewards: u0,
+          uptime: u100,
+          last-active: block-height
+        })
+        
+        (var-set total-nodes (+ (var-get total-nodes) u1))
+        (ok true))
+      error err-transfer-failed)
   )
 )
 
@@ -71,12 +77,15 @@
   (let ((node-data (map-get? nodes tx-sender)))
     (asserts! (is-some node-data) err-not-registered)
     
-    (map-set nodes tx-sender (merge (unwrap-panic node-data)
-      {
-        stake: (+ (get stake (unwrap-panic node-data)) amount)
-      }
-    ))
-    (ok true)
+    (match (stx-transfer? amount tx-sender (as-contract tx-sender))
+      success (begin
+        (map-set nodes tx-sender (merge (unwrap-panic node-data)
+          {
+            stake: (+ (get stake (unwrap-panic node-data)) amount)
+          }
+        ))
+        (ok true))
+      error err-transfer-failed)
   )
 )
 
@@ -84,6 +93,7 @@
 (define-public (update-metrics (uptime uint))
   (let ((node-data (map-get? nodes tx-sender)))
     (asserts! (is-some node-data) err-not-registered)
+    (asserts! (<= uptime u100) err-invalid-uptime)
     
     (map-set nodes tx-sender (merge (unwrap-panic node-data)
       {
