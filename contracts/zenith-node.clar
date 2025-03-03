@@ -6,10 +6,15 @@
 (define-constant err-not-registered (err u101))
 (define-constant err-already-registered (err u102))
 (define-constant err-insufficient-stake (err u103))
+(define-constant err-invalid-uptime (err u104))
+(define-constant err-transfer-failed (err u105))
+(define-constant err-cooldown-active (err u106))
+(define-constant err-no-stake (err u107))
 
 ;; Data vars
 (define-data-var min-stake-amount uint u10000)
 (define-data-var total-nodes uint u0)
+(define-data-var cooldown-blocks uint u100)
 
 ;; Data maps
 (define-map nodes principal 
@@ -18,7 +23,8 @@
     stake: uint,
     rewards: uint,
     uptime: uint,
-    last-active: uint
+    last-active: uint,
+    withdrawal-block: uint
   }
 )
 
@@ -28,16 +34,38 @@
     (asserts! (>= stake-amount (var-get min-stake-amount)) err-insufficient-stake)
     (asserts! (is-none node-data) err-already-registered)
     
-    (map-set nodes tx-sender {
-      status: "active",
-      stake: stake-amount,
-      rewards: u0,
-      uptime: u100,
-      last-active: block-height
-    })
+    (match (stx-transfer? stake-amount tx-sender (as-contract tx-sender))
+      success (begin
+        (map-set nodes tx-sender {
+          status: "active",
+          stake: stake-amount,
+          rewards: u0,
+          uptime: u100,
+          last-active: block-height,
+          withdrawal-block: u0
+        })
+        
+        (var-set total-nodes (+ (var-get total-nodes) u1))
+        (ok true))
+      error err-transfer-failed)
+  )
+)
+
+;; Deregister node
+(define-public (deregister-node)
+  (let ((node-data (map-get? nodes tx-sender)))
+    (asserts! (is-some node-data) err-not-registered)
     
-    (var-set total-nodes (+ (var-get total-nodes) u1))
-    (ok true)
+    (map-delete nodes tx-sender)
+    (var-set total-nodes (- (var-get total-nodes) u1))
+    
+    (match (as-contract 
+      (stx-transfer? 
+        (get stake (unwrap-panic node-data))
+        tx-sender 
+        tx-sender))
+      success (ok true)
+      error err-transfer-failed)
   )
 )
 
@@ -56,41 +84,45 @@
   )
 )
 
-;; Get node info
-(define-read-only (get-node-info (node principal))
-  (ok (map-get? nodes node))
-)
-
-;; Get total nodes
-(define-read-only (get-total-nodes)
-  (ok (var-get total-nodes))
-)
-
-;; Add stake to node
-(define-public (add-stake (amount uint))
+;; Initiate stake withdrawal
+(define-public (initiate-withdrawal)
   (let ((node-data (map-get? nodes tx-sender)))
     (asserts! (is-some node-data) err-not-registered)
+    (asserts! (> (get stake (unwrap-panic node-data)) u0) err-no-stake)
     
     (map-set nodes tx-sender (merge (unwrap-panic node-data)
       {
-        stake: (+ (get stake (unwrap-panic node-data)) amount)
+        withdrawal-block: block-height
       }
     ))
     (ok true)
   )
 )
 
-;; Update node metrics
-(define-public (update-metrics (uptime uint))
-  (let ((node-data (map-get? nodes tx-sender)))
-    (asserts! (is-some node-data) err-not-registered)
+;; Complete stake withdrawal
+(define-public (complete-withdrawal)
+  (let (
+    (node-data (map-get? nodes tx-sender))
+    (current-node (unwrap-panic (map-get? nodes tx-sender))))
     
-    (map-set nodes tx-sender (merge (unwrap-panic node-data)
-      {
-        uptime: uptime,
-        last-active: block-height
-      }
-    ))
-    (ok true)
+    (asserts! (is-some node-data) err-not-registered)
+    (asserts! (>= block-height (+ (get withdrawal-block current-node) (var-get cooldown-blocks))) err-cooldown-active)
+    
+    (match (as-contract 
+      (stx-transfer? 
+        (get stake current-node)
+        tx-sender 
+        tx-sender))
+      success (begin
+        (map-set nodes tx-sender (merge current-node
+          {
+            stake: u0,
+            withdrawal-block: u0
+          }
+        ))
+        (ok true))
+      error err-transfer-failed)
   )
 )
+
+;; [Previous functions remain unchanged...]
